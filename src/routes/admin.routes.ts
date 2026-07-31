@@ -143,9 +143,9 @@ router.get('/markup-statistics', requireLocalAuth, requireAdmin, async (req: Req
     const appResult = await deriv.getAppMarkupStatistics(dateFrom, dateTo, lucroIaAppId);
     const totalMarkup = appResult.total_app_markup_usd ?? 0;
 
-    // Divisão fixa 50/50 — ajustar aqui se o acordo de parceria mudar.
-    const KELVIN_PCT = 50;
-    const PLATFORM_PCT = 50;
+    // Divisão fixa 35/65 — ajustar aqui se o acordo de parceria mudar.
+    const KELVIN_PCT = 35;
+    const PLATFORM_PCT = 65;
     const commissionSplit = {
       kelvin: Number((totalMarkup * (KELVIN_PCT / 100)).toFixed(2)),
       platform: Number((totalMarkup * (PLATFORM_PCT / 100)).toFixed(2)),
