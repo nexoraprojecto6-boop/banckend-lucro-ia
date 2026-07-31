@@ -1,5 +1,5 @@
 // ============================================================
-// NEXORA FOREX — Deriv API Service
+// LUCRO IA — Deriv API Service
 // ============================================================
 // Correcções aplicadas vs versão anterior:
 //   ✅ Timeouts em todos os axios calls (evita travamentos)
@@ -9,8 +9,17 @@
 //   ✅ Mensagens de erro mais detalhadas nos logs
 //   ✅ createPublicWebSocket: sem re-exportar — usar apenas
 //      para dados públicos (active_symbols, etc.)
-//   ✅ getMarkupStatistics — relatório de comissão da app
-//      (GET /applications/v1/markup-statistics)
+//   ✅ getMarkupStatistics — relatório de comissão (todas as
+//      apps do token) (GET /applications/v1/markup-statistics)
+//   ✅ NOVO: getAppMarkupStatistics — mesmo relatório, mas
+//      filtrado por um app_id específico. O token
+//      DERIV_MARKUP_TOKEN é do afiliado/IB e pode reportar
+//      várias apps de uma vez (Lucro IA + outras apps tuas);
+//      este método isola só a app pedida a partir do campo
+//      `breakdown` da resposta, e recalcula os totais a partir
+//      apenas dessa entrada — os totais "total_*" da resposta
+//      da Deriv são agregados de TODAS as apps do token e não
+//      devem ser usados directamente quando se quer só uma app.
 //   ✅ NOVO: DerivTokenExpiredError — erro dedicado quando o
 //      DERIV_MARKUP_TOKEN expira ou é inválido (o token de API
 //      da Deriv tem validade máxima de 90 dias), para o admin
@@ -96,6 +105,23 @@ export interface MarkupStatisticsData {
 export interface MarkupStatisticsResponse {
   data: MarkupStatisticsData;
   meta: { endpoint: string; method: string; timing: number };
+}
+
+/**
+ * Resultado de getAppMarkupStatistics — mesmo "shape" dos totais
+ * de MarkupStatisticsData, mas calculado a partir de UMA única
+ * entrada do breakdown (a app pedida). Inclui `app_found` para o
+ * caller distinguir "esta app não teve movimento no período" de
+ * "esta app nunca apareceu no breakdown" (ex: app_id errado).
+ */
+export interface AppMarkupStatistics {
+  app_id:               string;
+  app_found:            boolean;
+  total_app_markup_usd: number;
+  total_volume_usd:     number;
+  total_payout_usd:     number;
+  total_contract_count: number;
+  total_client_count:   number;
 }
 
 // ─── DerivAPIService ──────────────────────────────────────────
@@ -204,10 +230,16 @@ export class DerivAPIService {
 
   /**
    * GET /applications/v1/markup-statistics
-   * Estatísticas de markup/comissão da app registada na Deriv,
-   * num intervalo de datas. Requer token com scope
-   * `application_read` (normalmente o token do dono da app,
-   * não o do utilizador final — ver DERIV_MARKUP_TOKEN no .env).
+   * Estatísticas de markup/comissão de TODAS as apps registadas
+   * no token usado, num intervalo de datas. Requer token com
+   * scope `application_read` (normalmente o token do dono da
+   * app/afiliado, não o do utilizador final — ver
+   * DERIV_MARKUP_TOKEN no .env).
+   *
+   * ATENÇÃO: se o teu token de afiliado tem várias apps
+   * associadas (ex: Lucro IA + outros projectos), os totais
+   * "total_*" desta resposta somam TODAS elas. Para dados de
+   * uma única app, usa getAppMarkupStatistics() abaixo.
    *
    * dateFrom / dateTo no formato "YYYY-MM-DD".
    *
@@ -247,6 +279,55 @@ export class DerivAPIService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Igual a getMarkupStatistics, mas devolve os números de UMA
+   * única app (identificada por `appId`), isolada a partir do
+   * `breakdown` da resposta. Usa esta função sempre que quiseres
+   * mostrar só a comissão da Lucro IA e não a soma de todas as
+   * apps do teu token de afiliado.
+   *
+   * Se a app não aparecer no breakdown (sem movimento no período,
+   * ou app_id errado), devolve todos os totais a 0 com
+   * `app_found: false` — não é tratado como erro, porque "sem
+   * dados neste período" é um resultado válido.
+   */
+  async getAppMarkupStatistics(
+    dateFrom: string,
+    dateTo: string,
+    appId: string,
+  ): Promise<AppMarkupStatistics> {
+    const full = await this.getMarkupStatistics(dateFrom, dateTo);
+    const entry = full.data.breakdown?.find((b) => String(b.app_id) === String(appId));
+
+    if (!entry) {
+      logger.info('[DerivAPI] App não encontrada no breakdown de markup statistics', {
+        appId,
+        dateFrom,
+        dateTo,
+        appsNoBreakdown: full.data.breakdown?.map((b) => b.app_id) ?? [],
+      });
+      return {
+        app_id: appId,
+        app_found: false,
+        total_app_markup_usd: 0,
+        total_volume_usd: 0,
+        total_payout_usd: 0,
+        total_contract_count: 0,
+        total_client_count: 0,
+      };
+    }
+
+    return {
+      app_id: appId,
+      app_found: true,
+      total_app_markup_usd: entry.app_markup_usd ?? 0,
+      total_volume_usd: entry.volume_usd ?? 0,
+      total_payout_usd: entry.payout_usd ?? 0,
+      total_contract_count: entry.contract_count ?? 0,
+      total_client_count: entry.client_count ?? 0,
+    };
   }
 
   // ── WebSocket Autenticado (via OTP) ──────────────────────
