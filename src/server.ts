@@ -44,6 +44,18 @@
 //      "não saudável" e reiniciá-la (visto no log de 21/07,
 //      00:12–00:14: "Rate limit exceeded" em loop → SIGTERM →
 //      restart da instância).
+//   ✅ NOVO (suporte multi-moeda): a moeda real da conta Deriv
+//      autorizada (target.currency, vindo do authorize/getAccounts
+//      da Deriv) passa a ser guardada em session.accountCurrency e
+//      é SEMPRE forçada no BotConfig ao arrancar um bot do catálogo
+//      via 'start_catalog_bot' — substitui o "USD" fixo que vinha
+//      em catalog-seed.ts. Isto permite negociar em EUR ou em
+//      qualquer outra moeda suportada pela Deriv, sem o utilizador
+//      escolher a moeda manualmente (teria de bater certo com a
+//      moeda da conta autenticada, ou a Deriv rejeita o contrato
+//      com ContractCreationFailure). Atualiza-se automaticamente
+//      também em 'switch_account', porque ambos os fluxos passam
+//      por authenticateClient().
 // ============================================================
 
 import 'express-async-errors';
@@ -111,6 +123,7 @@ interface ClientSession {
   derivMessageHandler:  ((raw: Buffer) => void) | null;
   token:                string;
   accountId:            string | null;
+  accountCurrency:      string;              // ← NOVO: moeda real da conta Deriv autorizada
   pingInterval:         NodeJS.Timeout | null;
   authTimeout:          NodeJS.Timeout | null;
   reconnectTimer:       NodeJS.Timeout | null;
@@ -428,8 +441,20 @@ async function handleBotMessage(
           break;
         }
 
+        // ── NOVO (suporte multi-moeda) ──────────────────────
+        // 'currency' é IGNORADO de configOverride de propósito:
+        // nunca deixamos o cliente escolher a moeda do contrato.
+        // A única moeda válida é a da conta Deriv autorizada na
+        // sessão (session.accountCurrency), obtida no authorize/
+        // getAccounts em authenticateClient(). Isto substitui o
+        // "USD" fixo vindo de catalog-seed.ts e evita
+        // ContractCreationFailure por moeda incompatível com a
+        // conta.
+        const { currency: _ignoredCurrencyOverride, ...configOverrideSafe } = configOverride;
+
         const finalConfig: BotConfig = {
-          ...catalogBot.defaultConfig, ...configOverride,
+          ...catalogBot.defaultConfig, ...configOverrideSafe,
+          currency: session.accountCurrency, // ← sempre a moeda real da conta ligada
           strategyParams: {
             ...(catalogBot.defaultConfig.strategyParams ?? {}),
             ...((configOverride.strategyParams as Record<string, unknown>) ?? {}),
@@ -561,6 +586,7 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
 
     session.token         = token;
     session.accountId     = targetAccountId;
+    session.accountCurrency = target.currency ?? 'USD'; // ← NOVO: moeda real da conta, usada em start_catalog_bot
     session.isAdmin       = ADMIN_IDS.has(targetAccountId);
     session.authenticated = true;
     session.reconnectAttempts = 0;
@@ -592,7 +618,9 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
       isAdmin: session.isAdmin,
     });
 
-    logger.info('[WS] Client authenticated', { accountId: targetAccountId, isAdmin: session.isAdmin });
+    logger.info('[WS] Client authenticated', {
+      accountId: targetAccountId, isAdmin: session.isAdmin, currency: session.accountCurrency,
+    });
   } catch (err: any) {
     logger.error('[WS] Authentication failed', { error: err.message });
     sendError(ws, err.message ?? 'Falha na autenticação', 'AUTH_FAILED');
@@ -649,6 +677,7 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
   const session: ClientSession = {
     derivWs: null, derivMessageHandler: null,
     token: '', accountId: null,
+    accountCurrency: 'USD', // ← NOVO: default até autenticar; substituído em authenticateClient()
     pingInterval: null, authTimeout: null, reconnectTimer: null,
     reconnectAttempts: 0, authenticated: false, isAdmin: false,
     botManager: null, nextReqId: 1000,
