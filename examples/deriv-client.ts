@@ -1,12 +1,33 @@
 /**
  * Exemplo de Cliente TypeScript para a API Deriv Trading Backend
  * Este arquivo mostra como integrar com o backend a partir do frontend Next.js
+ *
+ * CORREÇÃO (suporte multi-moeda):
+ *   Antes, getProposal() e createAccount() enviavam sempre
+ *   currency: 'USD' fixo. A Deriv só aceita propor/comprar
+ *   contratos na MESMA moeda da conta autorizada — enviar 'USD'
+ *   fixo numa conta EUR (ou qualquer outra moeda) resulta em
+ *   erro da API (ContractCreationFailure / moeda incompatível).
+ *
+ *   Agora a classe guarda a moeda REAL da conta ativa
+ *   (this.currentCurrency), atualizada automaticamente sempre que:
+ *     - getAccounts() é chamado (guarda a moeda da 1ª conta como
+ *       fallback inicial), ou
+ *     - initializeTradingSession(accountId) é chamado (procura a
+ *       moeda exata dessa conta na lista já carregada), ou
+ *     - o evento 'authenticated' do WebSocket do backend chega
+ *       (ver setActiveAccountCurrency, a chamar a partir do
+ *       listener de WS que trata esse evento no teu código).
+ *
+ *   getProposal() usa sempre this.currentCurrency em vez de
+ *   'USD' fixo.
  */
 
 class DerivTradingClient {
   private baseUrl: string;
   private accessToken: string | null = null;
   private sessionId: string | null = null;
+  private currentCurrency: string = 'USD'; // ← atualizado dinamicamente, nunca hardcoded a partir daqui
 
   constructor(baseUrl: string = 'http://localhost:3001') {
     this.baseUrl = baseUrl;
@@ -85,6 +106,10 @@ class DerivTradingClient {
 
   /**
    * 4. Listar Contas
+   *    Também guarda a moeda da 1ª conta como fallback inicial de
+   *    this.currentCurrency — ficará corrigida para a conta certa
+   *    assim que initializeTradingSession() ou o evento
+   *    'authenticated' do WS forem processados.
    */
   async getAccounts() {
     try {
@@ -98,7 +123,13 @@ class DerivTradingClient {
       if (!response.ok) throw new Error('Failed to fetch accounts');
 
       const data = await response.json();
-      return data.data.accounts;
+      const accounts = data.data.accounts;
+
+      if (Array.isArray(accounts) && accounts.length > 0 && accounts[0]?.currency) {
+        this.currentCurrency = accounts[0].currency;
+      }
+
+      return accounts;
     } catch (error) {
       console.error('Get accounts failed:', error);
       throw error;
@@ -107,8 +138,13 @@ class DerivTradingClient {
 
   /**
    * 5. Criar Nova Conta
+   *    Aqui a moeda É uma escolha explícita do utilizador (está a
+   *    abrir uma conta nova de raiz), por isso continua a receber
+   *    um parâmetro — mas deixa de estar fixa a 'USD' por omissão
+   *    silenciosa; usa a moeda ativa como valor por omissão
+   *    razoável, sobreponível pelo chamador.
    */
-  async createAccount(type: 'demo' | 'real' = 'demo') {
+  async createAccount(type: 'demo' | 'real' = 'demo', currency: string = this.currentCurrency) {
     try {
       const response = await fetch(`${this.baseUrl}/api/accounts`, {
         method: 'POST',
@@ -117,7 +153,7 @@ class DerivTradingClient {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          currency: 'USD',
+          currency,
           group: 'row',
           accountType: type,
         }),
@@ -135,6 +171,10 @@ class DerivTradingClient {
 
   /**
    * 6. Inicializar Sessão de Trading (WebSocket)
+   *    Também sincroniza this.currentCurrency com a moeda exata da
+   *    conta escolhida (accountId), caso getAccounts() já tenha
+   *    sido chamado antes — evita depender só do fallback da 1ª
+   *    conta.
    */
   async initializeTradingSession(accountId: string) {
     try {
@@ -151,11 +191,33 @@ class DerivTradingClient {
 
       const data = await response.json();
       this.sessionId = data.data.sessionId;
+
+      // O backend pode devolver a moeda da conta ligada junto com
+      // os dados da sessão — se vier, é a fonte mais fiável.
+      if (data.data.currency) {
+        this.currentCurrency = data.data.currency;
+      }
+
       return data.data;
     } catch (error) {
       console.error('Initialize trading session failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Sincroniza a moeda ativa a partir do evento 'authenticated' do
+   * WebSocket do backend (ver server.ts — payload.currentAccount.currency).
+   * Chama isto no listener de WS do teu frontend quando esse evento
+   * chegar, para garantir que getProposal() usa sempre a moeda certa,
+   * mesmo depois de um switch_account.
+   */
+  setActiveAccountCurrency(currency: string) {
+    if (currency) this.currentCurrency = currency;
+  }
+
+  getActiveAccountCurrency(): string {
+    return this.currentCurrency;
   }
 
   /**
@@ -210,6 +272,8 @@ class DerivTradingClient {
 
   /**
    * 9. Obter Proposta de Preço
+   *    CORRIGIDO: currency já não vem fixo a 'USD' — usa sempre
+   *    this.currentCurrency (a moeda real da conta ativa).
    */
   async getProposal(options: {
     contractType: string;
@@ -229,7 +293,7 @@ class DerivTradingClient {
           sessionId: this.sessionId,
           basis: 'stake',
           durationUnit: 't',
-          currency: 'USD',
+          currency: this.currentCurrency, // ← antes: 'USD' fixo
           subscribe: true,
         }),
       });
@@ -438,14 +502,14 @@ export default DerivTradingClient;
 
 /**
  * EXEMPLO DE USO NO FRONTEND (React)
- * 
+ *
  * import { useEffect, useState } from 'react';
  * import DerivTradingClient from '@/lib/deriv-client';
- * 
+ *
  * export function TradingDashboard() {
  *   const [client] = useState(() => new DerivTradingClient());
  *   const [balance, setBalance] = useState(null);
- * 
+ *
  *   useEffect(() => {
  *     async function fetchData() {
  *       try {
@@ -455,15 +519,16 @@ export default DerivTradingClient;
  *         console.error(error);
  *       }
  *     }
- * 
+ *
  *     if (client.isAuthenticated()) {
  *       fetchData();
  *     }
  *   }, [client]);
- * 
+ *
  *   return (
  *     <div>
- *       <h1>Saldo: ${balance?.balance}</h1>
+ *       {/* usa client.getActiveAccountCurrency() em vez de '$' fixo *\/}
+ *       <h1>Saldo: {balance?.balance} {client.getActiveAccountCurrency()}</h1>
  *     </div>
  *   );
  * }
