@@ -33,7 +33,7 @@ import logger from '@utils/logger.js';
 // 'scalper', 'alfha', 'over1_recovery') NÃO mudaram — continuam
 // a mapear para as mesmas classes em bot.manager.ts. Só o campo
 // `name` (o que o utilizador vê no catálogo) foi alterado:
-//   GPT5.6   → FLUXO DE LUCRO
+//   GPT5.6   → ZETABOT
 //   SCALPER  → IMPULSO
 //   ALFHA    → ESCUDO
 //   ETHEREUM → ELITE
@@ -42,14 +42,14 @@ import logger from '@utils/logger.js';
 const CATALOG_BOTS: CreateCatalogBotDto[] = [
 
   // ──────────────────────────────────────────────────────────
-  // BOT 1 — FLUXO DE LUCRO (Simple CALL/PUT)
+  // BOT 1 — ZETABOT (Simple CALL/PUT)
   // ──────────────────────────────────────────────────────────
   // Abre contratos CALL/PUT alternados com stake fixo.
   // Não ajusta stake. Para quando atinge maxLoss ou maxProfit.
   // Usa ScalpingStrategy com maxConsecutiveLosses: 0 (sem pausa
   // automática por perdas consecutivas).
   {
-    name:        'FLUXO DE LUCRO',
+    name:        'ZETABOT',
     description: 'Abre contratos alternando CALL e PUT com stake fixo de $1. Sem ajuste de stake. Para automaticamente ao atingir $20 de perda ou $50 de lucro. Ideal para testar a ligação e ver o fluxo de trades em tempo real.',
     strategy:    'scalping',
     tags:        ['simples', 'iniciante', 'stake-fixo', 'teste'],
@@ -174,7 +174,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
         gale:                2,      // multiplicador do stake por perda
         lossesToStartGale:   0,      // Gale começa já na 1ª perda
         maxMartingaleSteps:  10,     // teto de níveis antes de resetar
-        pauseLossLimit:      20,     // pausa temporária ao acumular $20 de perda
+        pauseLossLimit:      20,     // pausa temporária ao atingir $20 de perda
         pauseSeconds:        10,     // duração da pausa automática
       },
     },
